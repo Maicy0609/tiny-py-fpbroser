@@ -23,7 +23,7 @@ generated fingerprint in a separate directory.
 ## Usage
 
 ```bat
-python fpbrowser.py
+python src/fpbrowser.py
 ```
 
 Select an existing profile or create a new one from the current exit IP.
@@ -32,16 +32,16 @@ Press Ctrl+C to close the browser and exit.
 ## Layout
 
 ```
-fpbrowser.py      entry point
-config.py         paths and fingerprint constants
-console.py        console output, key input and termination handling
-fingerprint.py    init script, media devices, voices, font hiding
-profiles.py       profile creation, upgrade, storage and selection
-browser.py        Chrome discovery, network policy, Playwright session
-smoke_test.py     platform-independent smoke tests
+src/fpbrowser.py      entry point
+src/config.py         paths and fingerprint constants
+src/console.py        console output, key input and termination handling
+src/fingerprint.py    init script, media devices, voices, font hiding
+src/profiles.py       profile creation, upgrade, storage and selection
+src/browser.py        Chrome discovery, network policy, Playwright session
+src/smoke_test.py     platform-independent smoke tests
 ```
 
-Runtime data is written next to the sources:
+Runtime data is written at the repository root:
 
 ```
 profiles/<name>.json   reusable browser parameters
@@ -51,12 +51,19 @@ data/<name>/           Chrome user-data-dir (cookies, local storage, ...)
 ## Tests
 
 ```bat
-python smoke_test.py
+python src/smoke_test.py
 ```
 
-The smoke tests cover platform-independent logic. The Windows console,
-registry font enumeration and the real browser session require a Windows x64
-run.
+The smoke tests cover platform-independent logic. On Windows, setting
+`FPBROWSER_E2E=1` additionally launches real Chrome and checks the injected
+fingerprint (languages, timezone, speech voices, media devices, fonts, canvas
+and audio noise).
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the full smoke suite
+on `windows-latest` with real Google Chrome. It is triggered by changes under
+`src/` or to the workflow itself; documentation-only changes do not start a run.
 
 ## License
 

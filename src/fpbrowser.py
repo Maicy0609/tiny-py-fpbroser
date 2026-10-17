@@ -1,10 +1,10 @@
 """Minimal fingerprint browser launcher (Windows x64 only, Python 3.14+).
 
-Run:      python fpbrowser.py
+Run:      python src/fpbrowser.py
 Requires: pip install playwright
           (no `playwright install` needed, the installed Chrome/Chromium is used)
 
-Modules, all in this directory (flat, no package):
+Modules, all in src/ (flat, no package):
     config.py       paths and fingerprint constants
     console.py      console colours, key input and termination handling
     fingerprint.py  injected init script, media devices, voices, font hiding
@@ -12,7 +12,7 @@ Modules, all in this directory (flat, no package):
     browser.py      Chrome discovery, network policy, Playwright session
     fpbrowser.py    entry point
 
-Layout next to this file:
+Layout relative to the repository root:
     profiles/<name>.json   browser parameters (reusable)
     data/<name>/           Chrome user-data-dir (cookies, local storage, ...)
 """

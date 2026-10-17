@@ -1,11 +1,12 @@
 """Smoke tests for the launcher's platform-independent logic.
 
-Run: python smoke_test.py
+Run: python src/smoke_test.py
 Windows-only paths (console, registry, Playwright) are exercised on a real
 Windows run; everything here works on any platform.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -13,6 +14,7 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import browser
@@ -28,7 +30,7 @@ FAKE_IPINFO = {
     "region": "NY",
     "org": "AS64500 Example",
 }
-BASE_DIR = Path(__file__).resolve().parent
+SRC_DIR = Path(__file__).resolve().parent
 
 
 class DisplayHelpersTest(unittest.TestCase):
@@ -153,12 +155,120 @@ class ProfileTest(unittest.TestCase):
             self.assertEqual(browser.decide_network("http://127.0.0.1:8080", None), (None, True))
 
 
+class RealChromeTest(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "real Chrome integration test requires Windows")
+    @unittest.skipUnless(os.environ.get("FPBROWSER_E2E") == "1", "set FPBROWSER_E2E=1 to run")
+    def test_real_chrome_fingerprint(self) -> None:
+        from playwright.sync_api import sync_playwright
+
+        exe = browser.find_browser()
+        self.assertTrue(exe.is_file(), exe)
+        self.assertTrue(fingerprint.installed_fonts(), "no fonts read from the Windows registry")
+
+        profile = profiles.build_profile(FAKE_IPINFO)
+        hidden = fingerprint.hidden_fonts(profile["browser"]["locale"])
+        init_script = fingerprint.build_init_script(profile, hidden)
+
+        with tempfile.TemporaryDirectory() as tmp, sync_playwright() as pw:
+            context = pw.chromium.launch_persistent_context(
+                str(Path(tmp) / "data"),
+                executable_path=str(exe),
+                headless=True,
+                no_viewport=True,
+                locale=profile["browser"]["locale"],
+                timezone_id=profile["browser"]["timezone_id"],
+                geolocation=profile["browser"]["geolocation"],
+                args=[
+                    f"--lang={profile['browser']['locale']}",
+                    "--use-fake-device-for-media-stream",
+                    "--force-webrtc-ip-handling-policy=default_public_interface_only",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+                ignore_default_args=["--enable-automation"],
+                handle_sigint=False,
+                handle_sigterm=False,
+                handle_sighup=False,
+            )
+            errors: list[str] = []
+
+            def record_error(exc: object) -> None:
+                errors.append(str(exc))
+
+            try:
+                context.add_init_script(init_script)
+                page = context.new_page()
+                page.on("pageerror", record_error)
+                page.goto("about:blank")
+                page.set_content("<html><body>smoke</body></html>")
+                state: Any = page.evaluate(
+                    """async () => {
+                      const devices = await navigator.mediaDevices.enumerateDevices();
+                      const canvas = document.createElement('canvas');
+                      canvas.width = 64;
+                      canvas.height = 64;
+                      const ctx = canvas.getContext('2d');
+                      ctx.fillStyle = '#123456';
+                      ctx.fillRect(0, 0, 64, 64);
+                      const first = canvas.toDataURL();
+                      const second = canvas.toDataURL();
+                      const offline = new OfflineAudioContext(1, 1024, 44100);
+                      const samples = offline.createBuffer(1, 1024, 44100).getChannelData(0);
+                      const gl = document.createElement('canvas').getContext('webgl');
+                      let pixels = null;
+                      if (gl) {
+                        pixels = new Uint8Array(4);
+                        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+                      }
+                      return {
+                        languages: navigator.languages.slice(),
+                        language: navigator.language,
+                        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                        voices: speechSynthesis.getVoices().map(v => ({name: v.name, lang: v.lang})),
+                        devices: devices.map(d => ({kind: d.kind, label: d.label, deviceId: d.deviceId})),
+                        canvasStable: first === second && first.startsWith('data:image/png'),
+                        audioNoisy: samples.some(v => v !== 0),
+                        webgl: gl !== null,
+                        pixels: pixels ? Array.from(pixels) : null,
+                      };
+                    }"""
+                )
+                self.assertEqual(errors, [])
+                self.assertEqual(state["languages"], profile["browser"]["languages"])
+                self.assertEqual(state["language"], profile["browser"]["locale"])
+                self.assertEqual(state["timezone"], profile["browser"]["timezone_id"])
+                self.assertEqual(state["voices"], profile["fingerprint"]["speech_voices"])
+                self.assertEqual(
+                    [d["kind"] for d in state["devices"]],
+                    ["audioinput", "audiooutput", "videoinput"],
+                )
+                self.assertTrue(all(d["label"] == "" and d["deviceId"] == "" for d in state["devices"]))
+                self.assertTrue(state["canvasStable"])
+                self.assertTrue(state["audioNoisy"])
+                if state["webgl"]:
+                    self.assertEqual(len(state["pixels"]), 4)
+
+                font_state: Any = page.evaluate(
+                    """(name) => ({
+                      allowed: document.fonts.check('12px "Arial"'),
+                      hidden: document.fonts.check('12px ' + JSON.stringify(name)),
+                      size: document.fonts.size,
+                    })""",
+                    hidden[0] if hidden else "Arial",
+                )
+                self.assertTrue(font_state["allowed"])
+                if hidden:
+                    self.assertTrue(font_state["hidden"])
+                    self.assertEqual(font_state["size"], 0)
+            finally:
+                context.close()
+
+
 class EntryPointTest(unittest.TestCase):
     @unittest.skipIf(sys.platform == "win32", "the platform guard exits early only off Windows")
     def test_platform_guard(self) -> None:
         result = subprocess.run(
-            [sys.executable, str(BASE_DIR / "fpbrowser.py")],
-            cwd=BASE_DIR,
+            [sys.executable, str(SRC_DIR / "fpbrowser.py")],
+            cwd=SRC_DIR,
             capture_output=True,
             text=True,
             timeout=20,

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+# Runtime data lives at the repository root, one level above src/.
+BASE_DIR = Path(__file__).resolve().parent.parent
 PROFILE_DIR = BASE_DIR / "profiles"
 DATA_DIR = BASE_DIR / "data"
 IPINFO_URL = "https://ipinfo.io/json"
