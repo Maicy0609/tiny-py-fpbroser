@@ -194,12 +194,19 @@ class RealChromeTest(unittest.TestCase):
             def record_error(exc: object) -> None:
                 errors.append(str(exc))
 
+            def fulfill(route: Any) -> None:
+                route.fulfill(
+                    status=200,
+                    content_type="text/html",
+                    body="<html><body>smoke</body></html>",
+                )
+
             try:
                 context.add_init_script(init_script)
+                context.route("https://smoke.test/**", fulfill)
                 page = context.new_page()
                 page.on("pageerror", record_error)
-                page.goto("about:blank")
-                page.set_content("<html><body>smoke</body></html>")
+                page.goto("https://smoke.test/")
                 state: Any = page.evaluate(
                     """async () => {
                       const devices = await navigator.mediaDevices.enumerateDevices();
