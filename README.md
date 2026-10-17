@@ -62,8 +62,10 @@ and audio noise).
 ## CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the full smoke suite
-on `windows-latest` with real Google Chrome. It is triggered by changes under
-`src/` or to the workflow itself; documentation-only changes do not start a run.
+on `windows-latest` (Windows Server 2025). The job verifies Winget, installs the
+current stable Google Chrome, then runs the unit tests and the real-Chrome
+integration test. It is triggered by changes under `src/` or to the workflow
+itself; documentation-only changes do not start a run.
 
 ## License
 
