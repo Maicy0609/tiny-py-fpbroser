@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Runtime data: cookies, local storage and generated profiles
+profiles/
+data/
