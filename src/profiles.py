@@ -83,8 +83,9 @@ def upgrade_profile(path: Path, profile: dict[str, Any]) -> None:
     """Fill fingerprint fields added after the profile was created, and save them."""
     fingerprint = profile["fingerprint"]
     defaults: dict[str, Callable[[], Any]] = {
-        "media_devices": build_media_devices,
+        "canvas_seed": lambda: secrets.randbits(32),
         "audio_seed": lambda: secrets.randbits(32),
+        "media_devices": build_media_devices,
         "speech_voices": lambda: build_speech_voices(profile["browser"]["locale"]),
     }
     missing = [key for key in defaults if key not in fingerprint]

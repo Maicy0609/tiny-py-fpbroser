@@ -9,7 +9,7 @@ Modules, all in src/ (flat, no package):
     console.py      console colours, key input and termination handling
     fingerprint.py  injected init script, media devices, voices, font hiding
     profiles.py     profile creation, upgrade, storage and selection
-    browser.py      Chrome discovery, network policy, Playwright session
+    browser.py      Chrome discovery, WebRTC policy, Playwright session
     fpbrowser.py    entry point
 
 Layout relative to the repository root:

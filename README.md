@@ -10,7 +10,7 @@ generated fingerprint in a separate directory.
 - Locale, timezone and geolocation derived from the current exit IP (ipinfo.io)
 - Per-profile Canvas, WebGL and AudioContext noise
 - Speech voices, media devices and installed-font masking for a stock Windows install
-- WebRTC policy and optional system proxy handling
+- WebRTC IP-leak protection based on the system proxy state
 - Exit-IP verification through the browser itself
 
 ## Requirements
@@ -37,7 +37,7 @@ src/config.py         paths and fingerprint constants
 src/console.py        console output, key input and termination handling
 src/fingerprint.py    init script, media devices, voices, font hiding
 src/profiles.py       profile creation, upgrade, storage and selection
-src/browser.py        Chrome discovery, network policy, Playwright session
+src/browser.py        Chrome discovery, WebRTC policy, Playwright session
 src/smoke_test.py     platform-independent smoke tests
 ```
 
@@ -59,13 +59,23 @@ The smoke tests cover platform-independent logic. On Windows, setting
 fingerprint (languages, timezone, speech voices, media devices, fonts, canvas
 and audio noise).
 
+## Type checking
+
+The code is fully annotated and passes `mypy --strict`:
+
+```bat
+pip install mypy
+python -m mypy
+```
+
 ## CI
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the full smoke suite
 on `windows-latest` (Windows Server 2025). The job verifies Winget, installs the
-current stable Google Chrome, then runs the unit tests and the real-Chrome
-integration test. It is triggered by changes under `src/` or to the workflow
-itself; documentation-only changes do not start a run.
+current stable Google Chrome, then runs the unit tests, the real-Chrome
+integration test and the `mypy --strict` type check. It is triggered by changes
+under `src/`, to `mypy.ini` or to the workflow itself; documentation-only
+changes do not start a run.
 
 ## License
 

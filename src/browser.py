@@ -1,4 +1,4 @@
-"""Chrome discovery, network policy and the Playwright browser session."""
+"""Chrome discovery, WebRTC policy and the Playwright browser session."""
 
 import json
 import os
@@ -64,28 +64,25 @@ def system_pac() -> str | None:
         return None
 
 
-def decide_network(proxy: str | None, pac: str | None) -> tuple[str | None, bool]:
-    """Returns (proxy to force on the browser or None, whether WebRTC UDP must be restricted)."""
-    if not (proxy or pac):
-        # VPN/TUN and app-level proxies are invisible here, so ask instead of guessing.
-        direct = confirm("No system proxy detected. Is this connection direct (no VPN or other proxy)?")
-        if direct:
-            info("Direct connection: WebRTC limited to the public interface, local IPs hidden.")
-        else:
-            warn("Assuming a proxy or VPN may be in use: WebRTC UDP is restricted (WebRTC calls may not connect).")
-        return None, not direct
-    kinds = [f"manual ({proxy.partition('://')[0] if '://' in proxy else 'http'})"] if proxy else []
-    if pac:
-        kinds.append("PAC script")
-    info(f"System proxy detected: {' + '.join(kinds)}. WebRTC UDP is restricted to the proxy.")
-    if not confirm("Force ALL browser traffic through the proxy (no direct fallback)?", default=True):
-        warn("Traffic may bypass the proxy, so the exit IP can differ from the proxy's.")
-        return None, True
-    if proxy:
-        ok("Browser traffic is forced through the proxy.")
-        return proxy, True
-    warn("A PAC script may still return DIRECT for some hosts; that cannot be enforced here.")
-    return None, True
+def webrtc_policy(proxy: str | None, pac: str | None) -> str:
+    """WebRTC IP-handling policy: keep UDP inside the proxy whenever one may be in use.
+
+    This never redirects traffic. Chrome follows the system proxy settings on its own;
+    this only decides how tightly WebRTC has to hold on to the exit IP, so that STUN
+    cannot reveal the real address behind a proxy or VPN.
+    """
+    if proxy or pac:
+        kinds = [f"manual ({proxy.partition('://')[0] if '://' in proxy else 'http'})"] if proxy else []
+        if pac:
+            kinds.append("PAC script")
+        info(f"System proxy detected: {' + '.join(kinds)}. WebRTC UDP is restricted to the proxy.")
+        return WEBRTC_POLICY_PROXIED
+    # VPN/TUN and app-level proxies are invisible here, so ask instead of guessing.
+    if confirm("No system proxy detected. Is this connection direct (no VPN or other proxy)?"):
+        info("Direct connection: WebRTC limited to the public interface, local IPs hidden.")
+        return WEBRTC_POLICY_DIRECT
+    warn("Assuming a proxy or VPN may be in use: WebRTC UDP is restricted (WebRTC calls may not connect).")
+    return WEBRTC_POLICY_PROXIED
 
 
 def check_exit(context: Any, profile: dict[str, Any]) -> None:
@@ -107,7 +104,7 @@ def check_exit(context: Any, profile: dict[str, Any]) -> None:
             f"Browser exit is {mask_ip(str(seen.get('ip', '')))} ({seen.get('country')}, "
             f"{seen.get('timezone')}) but the profile expects ({country}, {timezone})."
         )
-        warn("Use a matching proxy, or create a new profile. For PAC proxies set HTTPS_PROXY first.")
+        warn("Use a matching proxy, or create a new profile.")
     else:
         ok("Browser exit matches the profile region.")
 
@@ -115,7 +112,6 @@ def check_exit(context: Any, profile: dict[str, Any]) -> None:
 def run_browser(profile: dict[str, Any], exe: Path) -> None:
     try:
         from playwright.sync_api import Error as PlaywrightError
-        from playwright.sync_api import ProxySettings
         from playwright.sync_api import TimeoutError as PlaywrightTimeout
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -126,13 +122,11 @@ def run_browser(profile: dict[str, Any], exe: Path) -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     hidden = hidden_fonts(browser["locale"])
     info(f"Fonts: hiding {len(hidden)} installed fonts that a stock {browser['locale']} Windows lacks.")
-    forced_proxy, strict = decide_network(system_proxy(), system_pac())
-    proxy_settings: ProxySettings | None = {"server": forced_proxy} if forced_proxy else None
-    webrtc_policy = WEBRTC_POLICY_PROXIED if strict else WEBRTC_POLICY_DIRECT
+    policy = webrtc_policy(system_proxy(), system_pac())
     args = [
         f"--lang={browser['locale']}",
         "--start-maximized",
-        f"--force-webrtc-ip-handling-policy={webrtc_policy}",
+        f"--force-webrtc-ip-handling-policy={policy}",
         "--disable-blink-features=AutomationControlled",
         "--use-fake-device-for-media-stream",
     ]
@@ -146,7 +140,6 @@ def run_browser(profile: dict[str, Any], exe: Path) -> None:
                 locale=browser["locale"],
                 timezone_id=browser["timezone_id"],
                 geolocation=browser["geolocation"],
-                proxy=proxy_settings,
                 extra_http_headers={"Accept-Language": accept_language(browser["languages"])},
                 args=args,
                 ignore_default_args=["--enable-automation"],

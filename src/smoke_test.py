@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import patch
 
 import browser
+import config
 import fingerprint
 import profiles
 
@@ -145,14 +146,14 @@ class ProfileTest(unittest.TestCase):
             self.assertEqual(path.parent, root)
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), profile)
 
-    def test_decide_network(self) -> None:
+    def test_webrtc_policy(self) -> None:
         with patch.object(browser, "confirm", return_value=True):
-            self.assertEqual(browser.decide_network(None, None), (None, False))
-            self.assertEqual(browser.decide_network("http://127.0.0.1:8080", None), ("http://127.0.0.1:8080", True))
-            self.assertEqual(browser.decide_network(None, "http://pac/proxy.pac"), (None, True))
+            self.assertEqual(browser.webrtc_policy(None, None), config.WEBRTC_POLICY_DIRECT)
+            self.assertEqual(browser.webrtc_policy("http://127.0.0.1:8080", None), config.WEBRTC_POLICY_PROXIED)
+            self.assertEqual(browser.webrtc_policy(None, "http://pac/proxy.pac"), config.WEBRTC_POLICY_PROXIED)
         with patch.object(browser, "confirm", return_value=False):
-            self.assertEqual(browser.decide_network(None, None), (None, True))
-            self.assertEqual(browser.decide_network("http://127.0.0.1:8080", None), (None, True))
+            self.assertEqual(browser.webrtc_policy(None, None), config.WEBRTC_POLICY_PROXIED)
+            self.assertEqual(browser.webrtc_policy("http://127.0.0.1:8080", None), config.WEBRTC_POLICY_PROXIED)
 
 
 class RealChromeTest(unittest.TestCase):

@@ -4,3 +4,6 @@ __pycache__/
 # Runtime data: cookies, local storage and generated profiles
 profiles/
 data/
+
+# Local agent memory
+.workbuddy/
