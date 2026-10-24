@@ -8,6 +8,7 @@ Windows run; everything here works on any platform.
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from unittest.mock import patch
 
 import browser
 import config
+import dnscheck
 import fingerprint
 import profiles
 
@@ -269,6 +271,47 @@ class RealChromeTest(unittest.TestCase):
                     self.assertEqual(font_state["size"], 0)
             finally:
                 context.close()
+
+
+class DnsCheckTest(unittest.TestCase):
+    def test_query_packet_is_well_formed(self) -> None:
+        packet = dnscheck._encode_query("example.com")
+        self.assertEqual(packet[:2], b"\x4d\x42")
+        self.assertIn(b"\x07example\x03com\x00", packet)
+        # qtype 16 is TXT, qclass 1 is IN
+        self.assertEqual(packet[-4:], b"\x00\x10\x00\x01")
+
+    def test_parse_txt_reads_the_answer(self) -> None:
+        # A real TXT answer: one record, two length-prefixed strings.
+        qname = b"\x03o-o\x06myaddr\x06google\x03com\x00"
+        rdata = b"\x071.2.3.4\x1eedns0-client-subnet 5.6.7.0/24"
+        answer = (
+            struct.pack(">HHHHHH", 0x4D42, 0x8180, 1, 1, 0, 0)
+            + qname
+            + struct.pack(">HH", 16, 1)
+            + b"\xc0\x0c"  # the answer name is a pointer back to the question
+            + struct.pack(">HHIH", 16, 1, 60, len(rdata))
+            + rdata
+        )
+        values = dnscheck._parse_txt(answer)
+        self.assertEqual(values, ["1.2.3.4", "edns0-client-subnet 5.6.7.0/24"])
+
+    def test_result_flags_a_leak(self) -> None:
+        leaked = dnscheck.DnsResult("47.1.2.3", "124.240.18.0/24", "")
+        self.assertTrue(leaked.leaked)
+        self.assertFalse(leaked.resolved_remotely)
+        self.assertIn("LEAK", dnscheck.describe(leaked))
+
+    def test_result_without_subnet_is_clean(self) -> None:
+        clean = dnscheck.DnsResult("1.1.1.1", None, "")
+        self.assertFalse(clean.leaked)
+        self.assertTrue(clean.resolved_remotely)
+        self.assertIn("no client subnet", dnscheck.describe(clean))
+
+    def test_failed_query_is_reported(self) -> None:
+        failed = dnscheck.DnsResult(None, None, "query failed: timed out")
+        self.assertFalse(failed.leaked)
+        self.assertIn("failed", dnscheck.describe(failed))
 
 
 class EntryPointTest(unittest.TestCase):

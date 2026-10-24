@@ -9,6 +9,7 @@ from typing import Any
 
 from config import DATA_DIR, IPINFO_URL, WEBRTC_POLICY_DIRECT, WEBRTC_POLICY_PROXIED
 from console import CTRL_C, confirm, info, is_closing, ok, poll_key, warn
+from dnscheck import describe, query_probe
 from fingerprint import build_init_script, hidden_fonts
 from profiles import mask_ip
 
@@ -109,6 +110,32 @@ def check_exit(context: Any, profile: dict[str, Any]) -> None:
         ok("Browser exit matches the profile region.")
 
 
+def check_dns() -> None:
+    """Report which resolver the outside world sees, and warn about leaks.
+
+    A local proxy client usually answers A/AAAA queries itself, but TXT and
+    friends are forwarded upstream. If that upstream is on the local network,
+    the resolver discloses the real subnet through an EDNS client subnet and
+    the profile's exit region no longer holds for DNS.
+    """
+    result = query_probe()
+    if result.resolver is None and "failed" in result.raw:
+        warn(f"Could not check the DNS path: {result.raw}")
+        return
+    if result.leaked:
+        warn(f"DNS leak: {describe(result)}")
+        warn(
+            "The resolver disclosed your real network. Point the proxy client's DNS "
+            "upstream at the proxy (mihomo: bind nameserver with '#<node>'), or the "
+            "profile's region is not consistent across DNS and HTTP."
+        )
+    elif result.resolved_remotely:
+        ok(f"DNS path is clean: {describe(result)}")
+    else:
+        warn(f"DNS resolved by a local resolver: {describe(result)}")
+        warn("No client subnet was attached, but confirm the resolver leaves through the proxy.")
+
+
 def run_browser(profile: dict[str, Any], exe: Path) -> None:
     try:
         from playwright.sync_api import Error as PlaywrightError
@@ -153,6 +180,7 @@ def run_browser(profile: dict[str, Any], exe: Path) -> None:
             context.add_init_script(build_init_script(profile, hidden))
             ok(f"Browser started, profile data: {data_dir}")
             check_exit(context, profile)
+            check_dns()
             info("Press Ctrl+C in this console to close the browser and exit.")
             while not is_closing():
                 if poll_key() == CTRL_C and confirm("Close the browser and exit?"):

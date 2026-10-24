@@ -19,10 +19,55 @@ from config import (
 # Injected into every page/frame before any page script runs.
 INIT_JS = r"""(() => {
   const cfg = __CFG__;
-  const define = (proto, name, value) =>
-    Object.defineProperty(proto, name, { get: () => value, configurable: true });
-  define(Navigator.prototype, 'languages', Object.freeze(cfg.languages.slice()));
-  define(Navigator.prototype, 'language', cfg.languages[0]);
+
+  // --- native-code disguise ---------------------------------------------------
+  // Every API patched below is a JavaScript function, and a detector only has to
+  // call toString() on it to read our source instead of "[native code]". Each
+  // replacement therefore reports the native string, name and length of the
+  // function it replaced. This defeats the direct check; a detector that brings
+  // its own clean toString from a realm this script never ran in can still see
+  // the source, so every property stays on the prototype and the patch runs in
+  // every frame alike.
+  // The native string lives on the function itself under a registry symbol, so a
+  // patched copy of this script in another realm still recognises our functions.
+  const nativeKey = Symbol.for('fpbroser.nativeString');
+  const nativeToString = Function.prototype.toString;
+  const disguiseToString = function toString() {
+    const fake = this[nativeKey];
+    return fake !== undefined ? fake : nativeToString.call(this);
+  };
+  Object.defineProperty(disguiseToString, nativeKey, {
+    value: nativeToString.call(Function.prototype.toString), configurable: true,
+  });
+  Function.prototype.toString = disguiseToString;
+
+  const disguise = (patched, original) => {
+    Object.defineProperty(patched, nativeKey, {
+      value: nativeToString.call(original), configurable: true,
+    });
+    Object.defineProperty(patched, 'name', { value: original.name, configurable: true });
+    Object.defineProperty(patched, 'length', { value: original.length, configurable: true });
+  };
+  const patchMethod = (proto, name, make) => {
+    const original = proto[name];
+    const patched = make(original);
+    disguise(patched, original);
+    proto[name] = patched;
+  };
+  const patchAccessor = (proto, name, make) => {
+    const original = Object.getOwnPropertyDescriptor(proto, name);
+    const patched = make(original && original.get, original && original.set);
+    if (patched.get && original && original.get) disguise(patched.get, original.get);
+    if (patched.set && original && original.set) disguise(patched.set, original.set);
+    Object.defineProperty(proto, name, { ...patched, configurable: true });
+  };
+
+  patchAccessor(Navigator.prototype, 'languages', () => ({
+    get: () => Object.freeze(cfg.languages.slice()),
+  }));
+  patchAccessor(Navigator.prototype, 'language', () => ({
+    get: () => cfg.languages[0],
+  }));
 
   const prng = (seed) => () => {
     seed = (seed + 0x6D2B79F5) | 0;
@@ -37,10 +82,9 @@ INIT_JS = r"""(() => {
     for (let n = 0; n < 16; n++) d[Math.floor(rnd() * (d.length >> 2)) * 4 + (n % 3)] ^= 1;
     return img;
   };
-  const getImageData = CanvasRenderingContext2D.prototype.getImageData;
-  CanvasRenderingContext2D.prototype.getImageData = function (...a) {
-    return perturb(getImageData.apply(this, a));
-  };
+  const getImageData = CanvasRenderingContext2D.prototype.getImageData;  // pristine, for noisy()
+  patchMethod(CanvasRenderingContext2D.prototype, 'getImageData', (orig) =>
+    function (...a) { return perturb(orig.apply(this, a)); });
   const noisy = (canvas) => {
     const c = document.createElement('canvas');
     c.width = canvas.width;
@@ -51,27 +95,27 @@ INIT_JS = r"""(() => {
     x.putImageData(perturb(getImageData.call(x, 0, 0, c.width, c.height)), 0, 0);
     return c;
   };
-  const toDataURL = HTMLCanvasElement.prototype.toDataURL;
-  HTMLCanvasElement.prototype.toDataURL = function (...a) { return toDataURL.apply(noisy(this), a); };
-  const toBlob = HTMLCanvasElement.prototype.toBlob;
-  HTMLCanvasElement.prototype.toBlob = function (...a) { return toBlob.apply(noisy(this), a); };
+  patchMethod(HTMLCanvasElement.prototype, 'toDataURL', (orig) =>
+    function (...a) { return orig.apply(noisy(this), a); });
+  patchMethod(HTMLCanvasElement.prototype, 'toBlob', (orig) =>
+    function (...a) { return orig.apply(noisy(this), a); });
 
   // WebGL readback noise: readPixels is the other way to read rendering output.
   const patchRead = (proto) => {
-    const orig = proto.readPixels;
-    proto.readPixels = function (...a) {
-      const result = orig.apply(this, a);
-      const px = a[6];
-      if (px instanceof Uint8Array || px instanceof Uint8ClampedArray) {
-        const rnd = prng(cfg.canvas_seed ^ 0x5bd1e995);
-        for (let n = 0; n < 16 && px.length; n++) {
-          let pos = Math.floor(rnd() * px.length);
-          if (px.length % 4 === 0 && pos % 4 === 3) pos -= 1;  // leave alpha alone
-          px[pos] ^= 1;
+    patchMethod(proto, 'readPixels', (orig) =>
+      function (...a) {
+        const result = orig.apply(this, a);
+        const px = a[6];
+        if (px instanceof Uint8Array || px instanceof Uint8ClampedArray) {
+          const rnd = prng(cfg.canvas_seed ^ 0x5bd1e995);
+          for (let n = 0; n < 16 && px.length; n++) {
+            let pos = Math.floor(rnd() * px.length);
+            if (px.length % 4 === 0 && pos % 4 === 3) pos -= 1;  // leave alpha alone
+            px[pos] ^= 1;
+          }
         }
-      }
-      return result;
-    };
+        return result;
+      });
   };
   patchRead(WebGLRenderingContext.prototype);
   if (window.WebGL2RenderingContext) patchRead(WebGL2RenderingContext.prototype);
@@ -86,28 +130,28 @@ INIT_JS = r"""(() => {
       return (h >>> 0) / 4294967296 - 0.5;
     };
     const done = new WeakMap();  // AudioBuffer -> channels already perturbed
-    const getChannelData = AudioBuffer.prototype.getChannelData;
-    AudioBuffer.prototype.getChannelData = function (ch) {
-      const data = getChannelData.call(this, ch);
-      let channels = done.get(this);
-      if (!channels) done.set(this, (channels = new Set()));
-      if (!channels.has(ch)) {
-        channels.add(ch);
-        for (let i = 0; i < data.length; i++) data[i] += sampleNoise(ch, i) * 1e-6;
-      }
-      return data;
-    };
-    const copyFromChannel = AudioBuffer.prototype.copyFromChannel;
-    AudioBuffer.prototype.copyFromChannel = function (...a) {
-      this.getChannelData(a[1]);  // perturb the source first so both read paths agree
-      return copyFromChannel.apply(this, a);
-    };
+    patchMethod(AudioBuffer.prototype, 'getChannelData', (orig) =>
+      function (ch) {
+        const data = orig.call(this, ch);
+        let channels = done.get(this);
+        if (!channels) done.set(this, (channels = new Set()));
+        if (!channels.has(ch)) {
+          channels.add(ch);
+          for (let i = 0; i < data.length; i++) data[i] += sampleNoise(ch, i) * 1e-6;
+        }
+        return data;
+      });
+    patchMethod(AudioBuffer.prototype, 'copyFromChannel', (orig) =>
+      function (...a) {
+        this.getChannelData(a[1]);  // perturb the source first so both read paths agree
+        return orig.apply(this, a);
+      });
     for (const name of ['getFloatFrequencyData', 'getFloatTimeDomainData']) {
-      const orig = AnalyserNode.prototype[name];
-      AnalyserNode.prototype[name] = function (arr) {
-        orig.call(this, arr);
-        for (let i = 0; i < arr.length; i++) arr[i] += sampleNoise(2, i) * 1e-3;
-      };
+      patchMethod(AnalyserNode.prototype, name, (orig) =>
+        function (arr) {
+          orig.call(this, arr);
+          for (let i = 0; i < arr.length; i++) arr[i] += sampleNoise(2, i) * 1e-3;
+        });
     }
   }
 
@@ -122,21 +166,20 @@ INIT_JS = r"""(() => {
     };
     const voices = cfg.speech_voices.map(makeVoice);
     let announced = false;
-    SpeechSynthesis.prototype.getVoices = function () {
-      if (!announced) {  // Chrome fires voiceschanged once the list is ready
-        announced = true;
-        setTimeout(() => this.dispatchEvent(new Event('voiceschanged')), 0);
-      }
-      return voices.slice();
-    };
+    patchMethod(SpeechSynthesis.prototype, 'getVoices', () =>
+      function () {
+        if (!announced) {  // Chrome fires voiceschanged once the list is ready
+          announced = true;
+          setTimeout(() => this.dispatchEvent(new Event('voiceschanged')), 0);
+        }
+        return voices.slice();
+      });
     // The native setter rejects non-native voice objects, so keep the choice ourselves.
     const chosen = new WeakMap();
-    Object.defineProperty(SpeechSynthesisUtterance.prototype, 'voice', {
+    patchAccessor(SpeechSynthesisUtterance.prototype, 'voice', () => ({
       get() { return chosen.get(this) || null; },
       set(v) { chosen.set(this, v); if (v && v.lang) this.lang = v.lang; },
-      configurable: true,
-      enumerable: true,
-    });
+    }));
   }
 
   // Font set: hide installed fonts that a stock Windows install of this locale would not have.
@@ -155,39 +198,42 @@ INIT_JS = r"""(() => {
 
     // Keep the shadow faces out of sight: iteration, size, has/delete/clear, events and check().
     const proto = FontFaceSet.prototype;
-    const values = proto.values;
-    const has = proto.has;
-    const del = proto.delete;
-    const check = proto.check;
+    const values = proto.values;  // the pristine original, used by visible() below
     const visible = (set) => [...values.call(set)].filter((f) => !ours.has(f));
-    proto.values = proto.keys = proto[Symbol.iterator] = function () {
-      return visible(this)[Symbol.iterator]();
-    };
-    proto.entries = function () { return visible(this).map((f) => [f, f])[Symbol.iterator](); };
-    proto.forEach = function (cb, thisArg) {
-      visible(this).forEach((f) => cb.call(thisArg, f, f, this));
-    };
-    Object.defineProperty(proto, 'size', {
-      ...Object.getOwnPropertyDescriptor(proto, 'size'),
+    patchMethod(proto, 'values', () =>
+      function () { return visible(this)[Symbol.iterator](); });
+    patchMethod(proto, 'keys', () =>
+      function () { return visible(this)[Symbol.iterator](); });
+    patchMethod(proto, Symbol.iterator, () =>
+      function () { return visible(this)[Symbol.iterator](); });
+    patchMethod(proto, 'entries', () =>
+      function () { return visible(this).map((f) => [f, f])[Symbol.iterator](); });
+    patchMethod(proto, 'forEach', () =>
+      function (cb, thisArg) { visible(this).forEach((f) => cb.call(thisArg, f, f, this)); });
+    patchAccessor(proto, 'size', () => ({
       get() { return visible(this).length; },
-    });
-    proto.has = function (f) { return !ours.has(f) && has.call(this, f); };
-    proto.delete = function (f) { return !ours.has(f) && del.call(this, f); };
-    proto.clear = function () { for (const f of visible(this)) del.call(this, f); };
+    }));
+    patchMethod(proto, 'has', (orig) =>
+      function (f) { return !ours.has(f) && orig.call(this, f); });
+    patchMethod(proto, 'delete', (orig) =>
+      function (f) { return !ours.has(f) && orig.call(this, f); });
+    patchMethod(proto, 'clear', (orig) =>
+      function () { for (const f of visible(this)) orig.call(this, f); });
 
     // check() is false for a family with an unloaded face but true for an unknown family, so
     // without this a page could list our hidden fonts, which are exactly the installed ones.
     const generic = new Set(['serif', 'sans-serif', 'monospace', 'cursive', 'fantasy', 'system-ui',
       'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded', 'emoji', 'math', 'fangsong']);
     const sizeToken = /^.*?\d[\d.]*(?:px|pt|em|rem|%|ex|ch|cm|mm|in|pc|vw|vh|vmin|vmax)(?:\/\S+)?\s+/i;
-    proto.check = function (font, text) {
-      const result = check.call(this, font, text);
-      if (result) return result;
-      const families = String(font).replace(sizeToken, '').split(',')
-        .map((n) => n.trim().replace(/^["']|["']$/g, '').toLowerCase())
-        .filter((n) => !generic.has(n));
-      return families.length > 0 && families.every((n) => hidden.has(n)) ? true : result;
-    };
+    patchMethod(proto, 'check', (orig) =>
+      function (font, text) {
+        const result = orig.call(this, font, text);
+        if (result) return result;
+        const families = String(font).replace(sizeToken, '').split(',')
+          .map((n) => n.trim().replace(/^["']|["']$/g, '').toLowerCase())
+          .filter((n) => !generic.has(n));
+        return families.length > 0 && families.every((n) => hidden.has(n)) ? true : result;
+      });
 
     // Loading events caused only by our faces never reach page listeners.
     for (const type of ['loading', 'loadingdone', 'loadingerror']) {
@@ -199,8 +245,8 @@ INIT_JS = r"""(() => {
     }
   }
   if (window.queryLocalFonts) {
-    window.queryLocalFonts = () =>
-      Promise.reject(new DOMException('Permission denied.', 'NotAllowedError'));
+    patchMethod(window, 'queryLocalFonts', () =>
+      () => Promise.reject(new DOMException('Permission denied.', 'NotAllowedError')));
   }
 
   // Fake media devices: enumerateDevices never reveals real hardware. Capture streams come
@@ -220,13 +266,14 @@ INIT_JS = r"""(() => {
       Object.defineProperty(o, 'toJSON', { value: () => ({ ...v }) });
       return o;
     };
-    md.enumerateDevices = function () {
-      const seen = new Set();
-      const list = unlocked
-        ? cfg.media_devices
-        : cfg.media_devices.filter((d) => !seen.has(d.kind) && seen.add(d.kind));
-      return Promise.resolve(list.map(makeInfo));
-    };
+    patchMethod(md, 'enumerateDevices', () =>
+      function () {
+        const seen = new Set();
+        const list = unlocked
+          ? cfg.media_devices
+          : cfg.media_devices.filter((d) => !seen.has(d.kind) && seen.add(d.kind));
+        return Promise.resolve(list.map(makeInfo));
+      });
     const clean = (c) => {
       if (!c || typeof c !== 'object') return c;
       const out = { ...c };
@@ -238,13 +285,14 @@ INIT_JS = r"""(() => {
       }
       return out;
     };
-    const getUserMedia = md.getUserMedia;
-    md.getUserMedia = function (c) {
-      return getUserMedia.call(this, clean(c)).then((stream) => { unlocked = true; return stream; });
-    };
-    md.getDisplayMedia = function () {
-      return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
-    };
+    patchMethod(md, 'getUserMedia', (orig) =>
+      function (c) {
+        return orig.call(this, clean(c)).then((stream) => { unlocked = true; return stream; });
+      });
+    patchMethod(md, 'getDisplayMedia', () =>
+      function () {
+        return Promise.reject(new DOMException('Permission denied', 'NotAllowedError'));
+      });
   }
 })();
 """
@@ -340,4 +388,3 @@ def build_init_script(profile: dict[str, Any], hidden: list[str]) -> str:
         "hidden_fonts": hidden,
     }
     return INIT_JS.replace("__CFG__", json.dumps(cfg))
-
