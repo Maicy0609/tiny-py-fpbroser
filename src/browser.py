@@ -169,7 +169,12 @@ def run_browser(profile: dict[str, Any], exe: Path) -> None:
                 geolocation=browser["geolocation"],
                 extra_http_headers={"Accept-Language": accept_language(browser["languages"])},
                 args=args,
-                ignore_default_args=["--enable-automation"],
+                # Playwright's defaults ship --disable-extensions, which turns the whole
+                # extension subsystem off: the Web Store answers "Installation is not
+                # enabled" and chrome://extensions refuses to load anything. Dropping it
+                # leaves extensions available, so a profile can carry what a real Chrome
+                # of the same locale does.
+                ignore_default_args=["--enable-automation", "--disable-extensions"],
                 handle_sigint=False,
                 handle_sigterm=False,
                 handle_sighup=False,

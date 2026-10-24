@@ -7,3 +7,4 @@ data/
 
 # Local agent memory
 .workbuddy/
+.workbuddy-ai/
